@@ -343,6 +343,71 @@ function findPartitions ()
 		declare -gr DATA_PARTITION_CHOSEN=false
 	fi
 
+	# If we don't have a data partition do we want a logical volume for home?
+	if ! ${DATA_PARTITION_CHOSEN}
+	then
+		while true
+		do
+			cat <<-END
+
+				${SPACER}
+
+				The instructions asked you to choose whether or not you want a logical volume for home.
+
+			END
+			read -rp "Enter the size in GiB, or leave blank for no home lv: ${B}" ANSWER
+			echo "${R}"
+
+			[[ -z "${ANSWER}" ]] && break		# No swap.
+
+			if [[ "${ANSWER}" =~ ^[1-9][0-9]{1,}$ ]]
+			then
+				ANSWER=$(( ${ANSWER} ))	# Convert to a number.
+				break
+			fi
+
+			error 'The number must start with a non-zero and have at least 2 digits.'
+		done
+		if [[ -z ${ANSWER} ]]
+		then
+			declare -gr HOME_LV_CHOSEN=false
+		else
+			declare -gr HOME_LV_CHOSEN=true
+			declare -gr HOME_LV_SIZE=${ANSWER}
+		fi
+	fi
+
+	# Should we create a logical volume for docker?
+	while true
+	do
+		cat <<-END
+
+			${SPACER}
+
+			The instructions asked you to choose whether or not you want a logical volume for docker.
+
+		END
+		read -rp "Enter the size in GiB, or leave blank for no docker lv: ${B}" ANSWER
+		echo "${R}"
+
+		[[ -z "${ANSWER}" ]] && break		# No swap.
+
+		if [[ "${ANSWER}" =~ ^[1-9][0-9]{1,}$ ]]
+		then
+			ANSWER=$(( ${ANSWER} ))	# Convert to a number.
+			break
+		fi
+
+		error 'The number must start with a non-zero and have at least 2 digits.'
+	done
+	if [[ -z ${ANSWER} ]]
+	then
+		declare -gr DOCKER_LV_CHOSEN=false
+	else
+		declare -gr DOCKER_LV_CHOSEN=true
+		declare -gr DOCKER_LV_SIZE=${ANSWER}
+	fi
+
 	# The ESP partition.
 	while true
 	do
@@ -733,7 +798,7 @@ function preInstallationProcess ()
 
 	setUpLvm System system				# Set up the system LVM.
 
-	setUpLogicalVolume Boot boot system 512M	# Create /boot.
+	setUpLogicalVolume Boot boot system 1G	# Create /boot.
 	formatVolume Boot system-boot ext4 boot		# Format /boot.
 
 	if ${SWAP_PARTITION_CHOSEN}
@@ -743,7 +808,21 @@ function preInstallationProcess ()
 		formatVolume Swap system-swap swap swap	# Format /boot.
 	fi
 
-	setUpLogicalVolume Root root system '100%FREE'	# Create root.
+	if ${HOME_LV_CHOSEN}
+	then
+		# Create home.
+		setUpLogicalVolume Home home system ${HOME_LV_SIZE}G
+		formatVolume Home system-home ext4 home
+	fi
+
+	if ${DOCKER_LV_CHOSEN}
+	then
+		# Create docker.
+		setUpLogicalVolume Docker docker system ${DOCKER_LV_SIZE}G
+		formatVolume Docker system-docker xfs-docker docker
+	fi
+
+	setUpLogicalVolume Root root system '60%FREE'	# Create root.
 	formatVolume Root system-root ext4 root		# Format root.
 
 	if ${DATA_PARTITION_CHOSEN}
@@ -880,7 +959,7 @@ function setUpLogicalVolume ()
 	echo
 	echo "Set up logical volume ${HUMAN_NAME} for ${LABEL} in ${PARTITION} size ${SIZE}..."
 
-	if [[ ${SIZE} == '100%FREE' ]]
+	if [[ $SIZE == *FREE ]]
 	then
 		local -r OPTION=extents
 	else
@@ -921,6 +1000,9 @@ function formatVolume ()
 	if [[ ${TYPE} == 'swap' ]]
 	then
 		sudo mkswap --label=${LABEL} /dev/mapper/${PARTITION}
+	elif [[ ${TYPE} == 'xfs-docker' ]]
+	then
+		sudo mkfs.xfs -n ftype=1 -L ${LABEL} /dev/mapper/${PARTITION}
 	else
 		sudo mkfs.ext4 -L ${LABEL} /dev/mapper/${PARTITION}
 	fi
@@ -1109,6 +1191,23 @@ function mountPartitions ()
 	RET=${?}
 	(( RET )) && error 'Error mounting the EFI System Partition (ESP).' ${RET}
 
+	if ${HOME_LV_CHOSEN}
+	then
+		# Mount /home..
+		sudo mount /dev/mapper/system-home /mnt/root/home
+		RET=${?}
+		(( RET )) && error 'Error mounting home lv.' ${RET}
+	fi
+
+	if ${DOCKER_LV_CHOSEN}
+	then
+		# Mount /var/lib/docker.
+		sudo mkdir -p /mnt/root/var/lib/docker
+		sudo mount /dev/mapper/system-docker /mnt/root/var/lib/docker
+		RET=${?}
+		(( RET )) && error 'Error mounting docker lv.' ${RET}
+	fi
+
 	if ${DATA_PARTITION_CHOSEN}
 	then
 		# Mount /home.
@@ -1131,13 +1230,13 @@ function receiveScripts ()
 
 	# Receive the script for use after chroot.
 	sudo wget --no-verbose --output-document=/mnt/root/usr/local/sbin/encryptinstallationchroot	\
-		  https://www.dropbox.com/s/fx5przc19rp1n7d/encryptinstallationchroot?dl=1
+		  https://raw.githubusercontent.com/npetzall/luks-lvm/master/encryptinstallationchroot.sh
 	RET=${?}
 	(( RET )) && error 'Unable to download the script encryptinstallationchroot.' ${RET}
 
 	# Receive the script to refresh Grub.
 	sudo wget --no-verbose --output-document=/mnt/root/usr/local/sbin/refreshgrub	\
-		  https://www.dropbox.com/s/npoazngcj3khcvf/refreshgrub?dl=1
+		  https://raw.githubusercontent.com/npetzall/luks-lvm/master/refreshgrub.sh
 	RET=${?}
 	(( RET )) && error 'Unable to download the script refreshgrub.' ${RET}
 

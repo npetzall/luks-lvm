@@ -11,3 +11,9 @@ So this work is base of the work that has been contributed by Contributors to th
 
 Specifically Paddy Landau https://launchpad.net/~paddy-landau
 And David Pires https://launchpad.net/~slickymaster
+
+## Modifications
+
+* Added home lv
+* Added docker lv with xfs and d_type=1
+* Reduced root to use on 60%FREE instead of 100%
